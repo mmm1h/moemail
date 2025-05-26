@@ -1,25 +1,28 @@
-name: Upstream Sync
+name: Upstream Sync and Deploy
 
+# 赋予工作流写入内容（同步fork）和执行操作（触发其他工作流）的权限
 permissions:
   contents: write
+  actions: write
 
 on:
   schedule:
-    - cron: "0 0 * * *" # every day
-  workflow_dispatch:
+    - cron: "0 0 * * *" # 每天执行一次
+  workflow_dispatch: # 允许手动触发
 
 jobs:
   sync_latest_from_upstream:
     name: Sync latest commits from upstream repo
     runs-on: ubuntu-latest
+    # 仅当仓库是 fork 时运行
     if: ${{ github.event.repository.fork }}
 
     steps:
-      # Step 1: run a standard checkout action
+      # 步骤 1: 检出目标仓库代码
       - name: Checkout target repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4 # 建议使用最新版本
 
-      # Step 2: run the sync action
+      # 步骤 2: 与上游仓库同步更改
       - name: Sync upstream changes
         id: sync
         uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
@@ -27,14 +30,38 @@ jobs:
           upstream_sync_repo: beilunyang/moemail
           upstream_sync_branch: master
           target_sync_branch: master
-          target_repo_token: ${{ secrets.GITHUB_TOKEN }} # automatically generated, no need to set
-
-          # Set test_mode true to run tests instead of the true action!!
+          target_repo_token: ${{ secrets.GITHUB_TOKEN }} # GitHub 自动生成，无需设置
+          # 将 test_mode 设置为 true 以运行测试而不是实际操作
           test_mode: false
 
-      - name: Sync check
-        if: failure()
+      # 步骤 3: 检查同步状态并决定是否触发 Deploy 工作流
+      - name: Check sync status and trigger Deploy workflow
+        # 仅当 'sync' 步骤成功并且有新的提交时执行
+        if: steps.sync.outcome == 'success' && steps.sync.outputs.has_new_commits == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 用于 gh CLI 认证
+          OWNER_REPO: ${{ github.repository }} # 当前仓库，例如 "your-username/your-repo"
         run: |
-          echo "[Error] 由于上游仓库的 workflow 文件变更，导致 GitHub 自动暂停了本次自动更新，你需要手动 Sync Fork 一次，详细教程请查看项目README.md "
-          echo "[Error] Due to a change in the workflow file of the upstream repository, GitHub has automatically suspended the scheduled automatic update. You need to manually sync your fork. Please refer to the project README.md for instructions. "
+          echo "✅ 上游同步成功，并发现新的提交。"
+          echo "🚀 正在触发 'Deploy' 工作流，目标分支: ${{ github.ref_name }}，仓库: ${OWNER_REPO}..."
+          # 确保 'Deploy.yml' 或 'deploy.yml' 是你 Deploy 工作流的文件名
+          # 或者使用 Deploy 工作流的 'name' 属性值
+          gh workflow run Deploy.yml --ref ${{ github.ref_name }} -R ${OWNER_REPO}
+
+      # 步骤 4: 如果同步成功但没有新提交，则发出通知
+      - name: Notify if no new commits
+        if: steps.sync.outcome == 'success' && steps.sync.outputs.has_new_commits != 'true'
+        run: |
+          echo "ℹ️ 上游同步成功，但未发现新的提交。未触发部署。"
+
+      # 步骤 5: 处理 'sync' 步骤本身失败的情况 (您原有的 Sync check 逻辑)
+      - name: Handle Sync Specific Failure
+        # 仅当 'sync' 步骤失败时执行
+        if: steps.sync.outcome == 'failure'
+        run: |
+          echo "❌ [错误] 上游同步操作失败。"
+          echo "原因可能是上游仓库的 workflow 文件发生了变更，导致 GitHub 自动暂停了本次自动更新。"
+          echo "您需要手动同步一次您的 fork。详细教程请查看项目 README.md。"
+          # 如果 aormsby/Fork-Sync-With-Upstream-action 提供错误输出，可以尝试打印
+          # echo "Sync action error details: ${{ steps.sync.outputs.error_message }}"
           exit 1
