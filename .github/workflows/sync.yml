@@ -22,7 +22,18 @@ jobs:
       - name: Checkout target repo
         uses: actions/checkout@v4 # 建议使用最新版本
 
-      # 步骤 2: 与上游仓库同步更改
+      # 步骤 2: 检查同步所需的 PAT 是否已配置
+      - name: Validate sync PAT
+        env:
+          UPSTREAM_SYNC_PAT: ${{ secrets.UPSTREAM_SYNC_PAT }}
+        run: |
+          if [ -z "${UPSTREAM_SYNC_PAT}" ]; then
+            echo "::error::Missing secret UPSTREAM_SYNC_PAT."
+            echo "::error::Create a PAT with repo + workflow scopes, then add it in repository secrets."
+            exit 1
+          fi
+
+      # 步骤 3: 与上游仓库同步更改
       - name: Sync upstream changes
         id: sync
         uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
@@ -30,11 +41,11 @@ jobs:
           upstream_sync_repo: beilunyang/moemail
           upstream_sync_branch: master
           target_sync_branch: master
-          target_repo_token: ${{ secrets.GITHUB_TOKEN }} # GitHub 自动生成，无需设置
+          target_repo_token: ${{ secrets.UPSTREAM_SYNC_PAT }} # 需要具备 repo + workflow 权限的 PAT
           # 将 test_mode 设置为 true 以运行测试而不是实际操作
           test_mode: false
 
-      # 步骤 3: 检查同步状态并决定是否触发 Deploy 工作流
+      # 步骤 4: 检查同步状态并决定是否触发 Deploy 工作流
       - name: Check sync status and trigger Deploy workflow
         # 仅当 'sync' 步骤成功并且有新的提交时执行
         if: steps.sync.outcome == 'success' && steps.sync.outputs.has_new_commits == 'true'
@@ -48,19 +59,20 @@ jobs:
           # 或者使用 deploy 工作流的 'name' 属性值
           gh workflow run deploy.yml --ref ${{ github.ref_name }} -R ${OWNER_REPO}
 
-      # 步骤 4: 如果同步成功但没有新提交，则发出通知
+      # 步骤 5: 如果同步成功但没有新提交，则发出通知
       - name: Notify if no new commits
         if: steps.sync.outcome == 'success' && steps.sync.outputs.has_new_commits != 'true'
         run: |
           echo "ℹ️ 上游同步成功，但未发现新的提交。未触发部署。"
 
-      # 步骤 5: 处理 'sync' 步骤本身失败的情况 (您原有的 Sync check 逻辑)
+      # 步骤 6: 处理 'sync' 步骤本身失败的情况 (您原有的 Sync check 逻辑)
       - name: Handle Sync Specific Failure
         # 仅当 'sync' 步骤失败时执行
         if: steps.sync.outcome == 'failure'
         run: |
           echo "❌ [错误] 上游同步操作失败。"
-          echo "原因可能是上游仓库的 workflow 文件发生了变更，导致 GitHub 自动暂停了本次自动更新。"
+          echo "常见原因：UPSTREAM_SYNC_PAT 缺失、权限不足，或目标分支存在保护规则。"
+          echo "如果上游本次变更包含 .github/workflows/*，PAT 还需要 workflow 权限。"
           echo "您需要手动同步一次您的 fork。详细教程请查看项目 README.md。"
           # 如果 aormsby/Fork-Sync-With-Upstream-action 提供错误输出，可以尝试打印
           # echo "Sync action error details: ${{ steps.sync.outputs.error_message }}"
